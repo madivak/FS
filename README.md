@@ -1,9 +1,10 @@
 # FS
+-----
 
   **Immediate purpose**: Build steps for an armhf Debian Buster Rootfs and making it bootable.
   
   **End purpose**: Testing gitfs implementation
-
+ 
 
 # The Contents
 - [Multistrap](https://wiki.debian.org/Multistrap) configuration file
