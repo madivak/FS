@@ -1,0 +1,131 @@
+#USING MULTISTRAP TO GENERATE THE ROOTFS based on Debian 10(Buster) in this case.
+#=================================================================================
+#Multistrap is a tool that automates the creation of complete, bootable, Debian root filesystems. 
+#It can merge packages from different repositories. Extra packages are added to the rootfs simply by listing them. All dependencies are taken care of.
+#REQUIREMENTS:
+01. sudo apt-get update
+02. sudo apt-get install multistrap qemu qemu-user-static binfmt-support dpkg-cross gcc-arm-linux-gnueabihf gcc-arm-linux-gnueabi
+#CREATE WORKING DIRECTORY:
+03. mkdir multistrap
+04. cd multistrap
+#Do step 5 to understand the different directives in the conf file and see an example conf file.
+05. man multistrap 
+#Create a multistrap configuration file for your machine or copy my config file contents for armhf machine(with FPU):
+#paste the contents as seen in my multistrap.conf file. 
+06. nano multistrap.conf
+#After creating your machine conf file, run multistrap to create the rootfs
+#only use arch (-a) and directory (-d) arguments if they are not defined in conf file or if you want to overide the entries in the file.
+#If defined, change command to >$ sudo multistrap -f multistrap.conf
+07. sudo multistrap -a armhf -d armhf_rootfs -f multistrap.conf
+#After step 7, you'll have a rootfs that you can chroot but not bootable. You will see that there are no device files in armel_rootfs/dev. 
+#This will be a problem at boot time, unless you build a kernel with the below options: <CONFIG_DEVTMPFS=y> and <CONFIG_DEVTMPFS_MOUNT=y>
+#with the options enabled, the kernel will automatically mount a tmpfs on /dev, and will populate it with devices present on the system.
+# Mount dev in the chroot
+08. sudo mount -o bind /dev/ armhf_rootfs/dev/
+# Make some required files
+09. sudo touch armhf_rootfs/etc/fstab
+10. sudo touch armhf_rootfs/etc/rc.con
+# Set the board hostname
+11. echo nivek_armhf > armhf_rootfs/etc/hostname
+
+OR > sudoedit armhf_rootfs/etc/hostname #Then paste nivek_armhf
+#--------------------------------------------------------------------------------------------
+#sudo ln -sf /tmp/chroot_armel/lib/ld-linux.so.3 /lib/ld-linux.so.3
+#sudo sh -c "echo 0 > /proc/sys/vm/mmap_min_addr"
+
+#Debconf needs to be told to accept that user interaction is not desired:
+100. export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
+#Sort out locales before chroot, then chroot and configure packages
+101. sudo LC_ALL=C LANGUAGE=C LANG=C chroot armhf_rootfs dpkg --configure -a
+#Fix some ownership issuesAs we built this root filesystem as a normal
+#user we may have problems with some setuid programs, which need to be owned by the root user. 
+#So let’s change the ownership of some directories:
+102. sudo chroot armhf_rootfs chown root:root -R /bin /usr/bin /sbin /usr/sbin
+
+#102. sudo mount -t proc /proc $PWD/armhf_rootfs/proc
+#103. sudo mount --rbind /sys $PWD/armhf_rootfs/sys
+#104. sudo mount -o bind /dev/pts $PWD/armhf_rootfs/dev/
+
+#QemuUserEmulation SETUP
+#=======================
+105. sudo apt install qemu binfmt-support qemu-user-static #if not done before
+106. update-binfmts --display #check binfmt entries are successfully registered
+
+#===========================================================
+#\Installing the target C libraries 
+#METHOD 1: using multiarch: 
+#===========================================================
+#To be able to do cross developemnt for armhf, the machine arch needs to be added to the
+#Host source list.
+107. sudo dpkg --add-architecture armhf
+108. cp sources.list.x86_64_and_armhf /etc/apt/sources.list.RENAME
+#modify sources.list to include repos with armhf packages, or cp like above but change final filename from sources.list.RENAME to sources.list
+#Failure to modify sources.list step 107 will fail to fetch armhf Packages,#108 will fail
+#Installing the target C libraries with multiarch
+109. sudo apt update && sudo apt install libc6:armhf 
+#OR install it through 
+#112-113. sudo apt install libc6-armhf-cross libc6-dev-armhf-cross
+
+#===========================================================
+#METHOD 2: Using dpkg-cross: 
+#===========================================================
+#If the target Debian package cannot be installed directly on the host, we need to use dpkg-cross to "cross-install" the package
+107. sudo apt install dpkg-cross
+#download the target libc6 package from one of the Debian mirrors and install it using dpkg-cross:
+108. wget  https://mirror.yandex.ru/ubuntu-ports/pool/main/g/glibc/libc6_2.31-0ubuntu9_armhf.deb
+109. sudo dpkg-cross -a armhf -M -i libc6_2.31-0ubuntu9_armhf.deb #Target arch => armhf
+
+#===========================================================
+#Point QEMU to the target linux loader
+#===========================================================
+#Under multiarch the target arch loader is in the usual place (/lib/<triplet>) so nothing special is needed. If using dpkg-cross it's installed in a non-standard path so you need to tell QEMU about that.
+110. sudo nano /etc/qemu-binfmt.conf
+#for example, for the armel architecture: add the line
+111. EXTRA_OPTS="-L /usr/arm-linux-gnueabi"
+#OR for armhf add: 
+111. EXTRA_OPTS="-L /usr/arm-linux-gnueabihf"
+
+#===========================================================
+#TESTING THE EMULATION ENVIRONMENT
+#===========================================================
+#We will use the "hello" ARM Debian package to test the new environment.
+#Download the hello package (e.g. from http://ftp.debian.org/debian/pool/main/h/hello/hello_2.10-2_armhf.deb)
+#Unpack it with the command:
+112. dpkg -x hello_2.10-2_armhf.deb $PWD/hello_armhf
+#Finally, run the hello executable with:
+113. $PWD/hello_armhf/usr/bin/hello
+#It should print "Hello, world!".
+#That's it! You can now run non-native executables transparently, as long as QEMU supports the system calls used by it.
+
+#=====================================================================================#
+#Appendix: chrooting into target file systems
+#=====================================================================================#
+#To be able to chroot into a target file system, the qemu emulator for the target CPU needs to be available. 
+#You need first to install the qemu-user-static package: If not installed yet:
+117. sudo apt install qemu-user-static
+#If you are using stretch or earlier, make the emulator available for the target architecture inside the chroot at 
+#the path registered by binfmt-support. You can either bind-mount the binary into the chroot, or just copy it. 
+#Copying it means you won't have to copy it again, but it also means it won't get updates, while bind-mounting 
+#means you have to bind-mount For example, for an ARM target file system, you need to do one of the following:
+#**If HOST is Debian Stretch or earlier do this:
+
+118. sudo mount --bind /usr/bin/qemu-arm-static $PWD/armhf_rootfs/usr/bin #better if you expect to update qemu-arm-static 
+
+OR
+
+118. sudo cp /usr/bin/qemu-arm-static $PWD/armhf_rootfs/usr/bin #Better if you dont expect to ever copy it again, but it will never be updated
+
+#=======================================================
+#METHOD 1: Using *systemd-nspawn* to start a container:
+#=======================================================
+119. sudo apt install systemd-container
+120. systemd-nspawn -D $PWD/armhf_rootfs/ #I preferred systemd-nspawn to chroot.
+
+#=======================================================
+#METHOD 2: Using chroot to start a container:
+#=======================================================
+#** If you are not using systemd-nspawn, then you may want to mount special filesystems for devices, terminals and processes from the host in the chroot:**
+119. for f in dev dev/pts sys proc run ; do mount --bind /$f tmp/$f ; done
+#You should now be able to chroot into the file system:
+120. chroot $PWD/armhf_rootfs/
+#======================================================================================#
